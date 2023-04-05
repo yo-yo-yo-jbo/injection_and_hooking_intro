@@ -68,6 +68,7 @@ MainRoutine(
 )
 {
 	WCHAR wszExePath[MAX_PATH] = { 0 };
+	PWSTR pwszSep = NULL;
 
 	// Get the EXE path that we are loaded into
 	if (0 == GetModuleFileNameW(NULL, wszExePath, ARRAYSIZE(wszExePath)))
@@ -76,13 +77,14 @@ MainRoutine(
 	}
 
 	// If we are not running in the right process - inject
-	if (NULL == wcsstr(wszExePath, PROCESS_OF_INTEREST))
+	pwszSep = wcsrchr(wszExePath, L'\\');
+	if ((NULL == pwszSep) || (0 != wcscmp(pwszSep + 1, PROCESS_OF_INTEREST)))
 	{
-    // INJECTION CODE GOES HERE
+		// INJECTION CODE GOES HERE
 	}
 	else
 	{
-    // HOOKING CODE GOES HERE
+		// HOOKING CODE GOES HERE
 	}
 
 lblCleanup:
@@ -91,8 +93,78 @@ lblCleanup:
 }
 ```
 
-The idea is to invole the `GetModuleFileNameW` to get the path of the executable we are loaded into (with `NULL` to get that for the executable) and then using `wcsstr` to ensure we are loaded to the right process (`PROCESS_OF_INTEREST`).
+The idea is to invole the `GetModuleFileNameW` to get the path of the executable we are loaded into (with `NULL` to get that for the executable) and then using the `wcsrchr` to get the last directory separator and then `wcscmp` to ensure we are loaded to the right process (`PROCESS_OF_INTEREST`).
 
+As part of the injection code, we will need to find a process (the `PROCESS_OF_INTEREST` that was `#define`d earlier) by name and get its process ID.
+This is trivially done with Windows API with the `CreateToolhelp32Snapshot`, `Process32FirstW` and `Process32NextW` APIs. There is nothing special about that functionality, but it's a nice opportunity to show how my coding style looks like:
 
+```c
+#define CLOSE_TO_VAL(obj, val, pfn)				do									\
+												{									\
+													if ((val) != (obj))				\
+													{								\
+														(VOID)(pfn)(obj);			\
+														(obj) = (val);				\
+													}								\
+												} while (FALSE)
+
+#define CLOSE_HANDLE(hHandle)					CLOSE_TO_VAL(hHandle, NULL, CloseHandle)
+
+#define CLOSE_SNAPSHOT(hHandle)					do																\
+												{																\
+													__pragma(warning(push))										\
+													__pragma(warning(disable:6387))								\
+													CLOSE_TO_VAL(hHandle, INVALID_HANDLE_VALUE, CloseHandle);	\
+													__pragma(warning(pop))										\
+												} while (FALSE)
+
+static
+DWORD
+GetTargetPid(VOID)
+{
+	DWORD dwPid = 0;
+	HANDLE hSnap = INVALID_HANDLE_VALUE;
+	PROCESSENTRY32 tCurrProcess = { 0 };
+
+	// Find the right process
+	hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPALL, 0);
+	if (INVALID_HANDLE_VALUE == hSnap)
+	{
+		goto lblCleanup;
+	}
+
+	// Fetch first processs
+	tCurrProcess.dwSize = sizeof(tCurrProcess);
+	if (!Process32FirstW(hSnap, &tCurrProcess))
+	{
+		goto lblCleanup;
+	}
+
+	// Iterate all processes
+	do
+	{
+		if (0 == wcscmp(tCurrProcess.szExeFile, PROCESS_OF_INTEREST))
+		{
+			dwPid = tCurrProcess.th32ProcessID;
+			break;
+		}
+	} while (Process32NextW(hSnap, &tCurrProcess));
+
+lblCleanup:
+
+	// Cleanup
+	CLOSE_SNAPSHOT(hSnap);
+
+	// Return result
+	return dwPid;
+}
+```
+
+The function is trivial - it returns a process ID of `0` in case of failure and the right process ID in case of success.
+There are some interesting macros that I've defined that, in my opinion, make my code quite elegant:
+- `CLOSE_TO_VALUE` closes an object (most commonly `HANDLE` on Windows) and assigns it to a value (e.g. `NULL`) - unless it's equal to that value.
+- `CLOSE_HANDLE` simply closes a `NULL`-defaulted `HANDLE` with the `CloseHandle` API.
+- `CLOSE_SNAPSHOT` does the same but with `INVALID_HANDLE_VALUE`, since that's the error result for `CreateToolhelp32Snapshot`.
+Convince yourself why this case is leak-free and easy to read.
 
 
