@@ -99,23 +99,23 @@ As part of the injection code, we will need to find a process (the `PROCESS_OF_I
 This is trivially done with Windows API with the `CreateToolhelp32Snapshot`, `Process32FirstW` and `Process32NextW` APIs. There is nothing special about that functionality, but it's a nice opportunity to show how my coding style looks like:
 
 ```c
-#define CLOSE_TO_VAL(obj, val, pfn)				do									\
-								{									\
+#define CLOSE_TO_VAL(obj, val, pfn)				do							\
+								{							\
 									if ((val) != (obj))				\
-									{								\
+									{						\
 										(VOID)(pfn)(obj);			\
 										(obj) = (val);				\
-									}								\
+									}						\
 								} while (FALSE)
 
 #define CLOSE_HANDLE(hHandle)					CLOSE_TO_VAL(hHandle, NULL, CloseHandle)
 
-#define CLOSE_SNAPSHOT(hHandle)					do																\
-								{																\
-									__pragma(warning(push))										\
-									__pragma(warning(disable:6387))								\
+#define CLOSE_SNAPSHOT(hHandle)					do									\
+								{									\
+									__pragma(warning(push))						\
+									__pragma(warning(disable:6387))					\
 									CLOSE_TO_VAL(hHandle, INVALID_HANDLE_VALUE, CloseHandle);	\
-									__pragma(warning(pop))										\
+									__pragma(warning(pop))						\
 								} while (FALSE)
 
 static
@@ -166,6 +166,85 @@ There are some interesting macros that I've defined that, in my opinion, make my
 - `CLOSE_HANDLE` simply closes a `NULL`-defaulted `HANDLE` with the `CloseHandle` API.
 - `CLOSE_SNAPSHOT` does the same but with `INVALID_HANDLE_VALUE`, since that's the error result for `CreateToolhelp32Snapshot`.
 
-Convince yourself why this code is leak-free and easy to read.
+Convince yourself why this code is leak-free and easy to read, and most importantly, *works*.
 
+## DLL injection
+Assuming we got the right process ID for the desired process, how do we inject code into it?
+The number of code injection articles is too high to count, and there are *many* different methods of injecting code into a process.
+However, I will specify the simplest one (in my opinion) - `DLL injection` with `CreateRemoteThread`. The idea is quite simple:
+- Use `VirtualAllocEx` to allocate a RW region in the desired process address space.
+- Use `WriteProcessMemory` to write the DLL path there.
+- Run `LoadLibrary` in the other process address space with the help of `CreateRemoteThread` API. Since the thread routine has the exact prototype as `LoadLibrary`, we could use `LoadLibrary` as the thread routine and the newly allocated region (which contains the DLL path) there.
 
+Since we want to inject ourselves, we need to know our own DLL path - but that's easy - we call `GetModuleFileName` but with the `hInstance` we got back in `DllMain`.
+Here's the injection code:
+
+```c
+static
+BOOL
+InjectDll(
+	DWORD dwPid,
+	PWSTR pwszDllPath
+)
+{
+	BOOL bResult = FALSE;
+	HANDLE hProc = NULL;
+	HANDLE hThread = NULL;
+	SIZE_T cbDllPath = 0;
+	PVOID pvRemoteBuffer = NULL;
+	SIZE_T cbWritten = 0;
+
+	// Open the process
+	hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwPid);
+	if (NULL == hProc)
+	{
+		goto lblCleanup;
+	}
+
+	// Allocate RW memory for the DLL path
+	cbDllPath = (wcslen(pwszDllPath) + 1) * sizeof(*pwszDllPath);
+	pvRemoteBuffer = VirtualAllocEx(hProc, NULL, cbDllPath, MEM_COMMIT, PAGE_READWRITE);
+	if (NULL == pvRemoteBuffer)
+	{
+		goto lblCleanup;
+	}
+
+	// Copy the DLL path memory
+	if ((!WriteProcessMemory(hProc, pvRemoteBuffer, pwszDllPath, cbDllPath, &cbWritten)) || (cbWritten != cbDllPath))
+	{
+		goto lblCleanup;
+	}
+
+	// Inject the DLL
+	hThread = CreateRemoteThread(hProc, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryW, pvRemoteBuffer, 0, NULL);
+	if (NULL == hThread)
+	{
+		goto lblCleanup;
+	}
+
+	// Success
+	bResult = TRUE;
+
+lblCleanup:
+
+	// Cleanup
+	CLOSE_HANDLE(hThread);
+	if (NULL != pvRemoteBuffer)
+	{
+		(VOID)VirtualFreeEx(hProc, pvRemoteBuffer, 0, MEM_RELEASE);
+		pvRemoteBuffer = NULL;
+	}
+	CLOSE_HANDLE(hProc);
+
+	// Return result
+	return bResult;
+}
+```
+There are a few interesting takes here:
+- This function gets a process `HANDLE` using the `OpenProcess` API. It uses `PROCESS_ACCESS_ALL`, but we could improve it with more fine-grained flags if we ever feel it's necessary.
+- When calling `CreateRemoteThread`, we use `LoadLibraryW` as the start routine and supply `pvRemoteBuffer` as its argument.
+
+There is quite a subtle issue with using `LoadLibraryW` as the thread routine. You see, Windows (and all other modern operating systems) has a security feature called [ASLR](https://en.wikipedia.org/wiki/Address_space_layout_randomization). Its purpose is to randomize the base address at which modules are loaded, s.t. attackers that exploit memory corruption vulnerabilities will have a hard time determining where execution should proceed.  
+The subtle point here is that due to ASLR, *allegedly* there is no guarantee that `LoadLibraryW` has the same address in both of the processes - note we treat `LoadLibraryW` here locally in our process address space, but the thread routine should be in the foreign address space!  
+The solution to that is a mechanism in Windows called [Known DLLs](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order). Essentially, `Known DLLs` is a performance mechanism - common DLLs are mapped as memory sections when the operating system boots (`smss.exe` does that), and then, when a program tries to load them - they're loaded straight from that shared memory section, which is cheaper than reading from disk.  
+This performance improvement comes with a cost - all Known DLLs are going to be loaded to the same address on the local machine (but not between reboots). Luckily for us, `kernel32.dll` (which implements `LoadLibraryW`) *is* a Known DLL, so we can always refer to its functions locally and know that they are mapped to the same address in all other processes in the system!
