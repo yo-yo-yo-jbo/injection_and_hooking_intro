@@ -248,3 +248,130 @@ There is quite a subtle issue with using `LoadLibraryW` as the thread routine. Y
 The subtle point here is that due to ASLR, *allegedly* there is no guarantee that `LoadLibraryW` has the same address in both of the processes - note we treat `LoadLibraryW` here locally in our process address space, but the thread routine should be in the foreign address space!  
 The solution to that is a mechanism in Windows called [Known DLLs](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order). Essentially, `Known DLLs` is a performance mechanism - common DLLs are mapped as memory sections when the operating system boots (`smss.exe` does that), and then, when a program tries to load them - they're loaded straight from that shared memory section, which is cheaper than reading from disk.  
 This performance improvement comes with a cost - all Known DLLs are going to be loaded to the same address on the local machine (but not between reboots). Luckily for us, `kernel32.dll` (which implements `LoadLibraryW`) *is* a Known DLL, so we can always refer to its functions locally and know that they are mapped to the same address in all other processes in the system!
+
+## Hooking
+As I mentioned in the intro, there are multiple ways to hook a function. I would like to mention that hooking is a dangerous business - for example, if there are multiple threads of execution, we have to make sure no thread executes semi-hooked functions. I've seen that happen in the past - not to me, but to the MITRE Red Team during an official evaluation. I've blogged about it in the past - you are more than welcome to read [here](https://www.microsoft.com/en-us/security/blog/2020/06/11/blue-teams-helping-red-teams-a-tale-of-a-process-crash-powershell-and-the-mitre-attck-evaluation/).  
+In our case, we are going to perform some inline hooking. I am assuming I run in a 64-bit process, but adjusting will be quite easy, if necessary (left as an exercise to the reader). Let's break it down to smaller tasks:
+1. We will need to change the page protections of the hooked function to `RWX` (normally they will be `RX` only). This is necessary to be able to write our hook trampoline. It's important to know there are several mitigations on modern Windows against this - read the [SetProcessMitigationPolicy](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessmitigationpolicy) API for more info.
+2. We will need to backup the original bytes from the function we're going to override - in case we want to invoke the original function.
+3. Our trampoline should jump to our own function.
+
+For the trampoline itself, the idea is simple:
+```assembly
+48 b8 XX XX XX XX XX XX XX XX                       mov rax, <imm>
+50                                                  push rax
+C3                                                  ret
+```
+
+Overall - the trampoline takes `12` bytes, which is reasonable. I assume the function we are going to hook is longer than that.  
+For the hooking, I am going to backup the original bytes in a global variable - usually I dislike them, but it's kind of necessary when hooking.
+Here's my code (with an example to hook `MessageBoxA`):
+
+```c
+#define TRAMPOLINE_LEN (12)
+
+static
+BYTE
+g_acTrampolineBytes[TRAMPOLINE_LEN] = { 0 };
+
+static
+PBYTE
+g_pcOriginalFunctionPtr = NULL;
+
+static
+VOID
+SetTranpoline(
+	PVOID pvHook
+)
+{
+	// Hook instruction: MOV RAX, <IMM>
+	g_pcOriginalFunctionPtr[0] = 0x48;
+	g_pcOriginalFunctionPtr[1] = 0xb8;
+	*((PULONGLONG)(g_pcOriginalFunctionPtr + 2)) = (ULONGLONG)pvHook;
+
+	// Hook instruction: PUSH RAX
+	g_pcOriginalFunctionPtr[10] = 0x50;
+
+	// Hook instruction: RET
+	g_pcOriginalFunctionPtr[11] = 0xC3;
+}
+
+static
+VOID
+UnsetTranpoline(VOID)
+{
+	CopyMemory(g_pcOriginalFunctionPtr, g_acTrampolineBytes, sizeof(g_acTrampolineBytes));
+}
+
+static
+INT
+WINAPI
+MyFakeMessageBoxA(
+	HWND hWnd,
+	LPCSTR pszText,
+	LPCSTR pszCaption,
+	UINT uType)
+{
+	INT iResult = 0;
+
+	// We are overriding the text
+	UNREFERENCED_PARAMETERO(pszText);
+
+	// Call the original function
+	UnsetTranpoline();
+	iResult = MessageBoxA(hWnd, "HOOKED MSGBOX", pszCaption, uType);
+	SetTranpoline(MyFakeMessageBoxA);
+
+	// Return result
+	return iResult;
+}
+
+static
+BOOL
+InstallHook(VOID)
+{
+	HMODULE hModule = NULL;
+	DWORD dwOldProt = 0;
+	BOOL bResult = FALSE;
+
+	// Get the module
+	hModule = GetModuleHandleW(L"User32.dll");
+	if (NULL == hModule)
+	{
+		goto lblCleanup;
+	}
+
+	// Get the function to hook
+	g_pcOriginalFunctionPtr = (PBYTE)GetProcAddress(hModule, "MessageBoxA");
+	if (NULL == g_pcOriginalFunctionPtr)
+	{
+		goto lblCleanup;
+	}
+
+	// Change the page protection for hooking purposes
+	if (!VirtualProtect(g_pcOriginalFunctionPtr, sizeof(g_acTrampolineBytes), PAGE_EXECUTE_READWRITE, &dwOldProt))
+	{
+		goto lblCleanup;
+	}
+
+	// Save the original trampoline bytes for later unhooking
+	CopyMemory(g_acTrampolineBytes, g_pcOriginalFunctionPtr, sizeof(g_acTrampolineBytes));
+
+	// Install the hook
+	SetTranpoline(MyFakeMessageBoxA);
+
+	// Success
+	bResult = TRUE;
+
+lblCleanup:
+
+	// Return result
+	return bResult;
+}
+```
+
+Let's examine some critical points:
+- The `SetTrampoline` function sets the trampoline as we discussed - it assigned the `rax` register to the hook and then uses a `push-ret` trick to jump to it.
+- The `UnsetTrampoline` function restores the original bytes into the function using `CopyMemory`.
+- The `MyFakeMessageBoxA` function is the hook for `MessageBoxA`, which will call the original function but replace the text with a constant. To call the original `MessageBoxA` function - it must unset the trampoline - otherwise, it will call itself again.
+- The `InstallHook` function installs the hook on `MessageBoxA` by valling `VirtualProtect` with `PAGE_EXECUTE_READWRITE`.
