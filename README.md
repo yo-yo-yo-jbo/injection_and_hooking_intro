@@ -1,7 +1,13 @@
 # Introduction to injection and hooking
 
 Recently I was asked by a colleague to explain (and code) process injection and function hooking from scratch.
-I thought it was a nice opportunity to share with an audience - not only how those things work, but how I conceptually approach such a task.
+I thought it was a nice opportunity to share with an audience - not only how those things work, but how I conceptually approach such a task.  
+We will also touch in various interesting security topics, such as:
+- ASLR on Windows
+- Process mitigations against RWX pages
+- Known DLLs
+- Multithreaded environments
+- Secure C coding styles
 
 ## The task at hand
 The task is simple - code a `.dll` file that could be injected into an arbitrary process. Upon injection, it will hook a function in a certain way.  
@@ -375,3 +381,10 @@ Let's examine some critical points:
 - The `UnsetTrampoline` function restores the original bytes into the function using `CopyMemory`.
 - The `MyFakeMessageBoxA` function is the hook for `MessageBoxA`, which will call the original function but replace the text with a constant. To call the original `MessageBoxA` function - it must unset the trampoline - otherwise, it will call itself again.
 - The `InstallHook` function installs the hook on `MessageBoxA` by valling `VirtualProtect` with `PAGE_EXECUTE_READWRITE`.
+
+## Summary
+Even this short, trivial exercise is interesting in many ways, at least in my opinion.  
+When interviewing, I used to ask candidates how to inject and hook, what their considerations are, how things work and how to deal with edge-cases. I hope this blogpost is useful for those exact topics!
+
+Thanks,
+Jonathan Bar Or
