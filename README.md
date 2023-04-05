@@ -100,23 +100,23 @@ This is trivially done with Windows API with the `CreateToolhelp32Snapshot`, `Pr
 
 ```c
 #define CLOSE_TO_VAL(obj, val, pfn)				do									\
-												{									\
-													if ((val) != (obj))				\
-													{								\
-														(VOID)(pfn)(obj);			\
-														(obj) = (val);				\
-													}								\
-												} while (FALSE)
+								{									\
+									if ((val) != (obj))				\
+									{								\
+										(VOID)(pfn)(obj);			\
+										(obj) = (val);				\
+									}								\
+								} while (FALSE)
 
 #define CLOSE_HANDLE(hHandle)					CLOSE_TO_VAL(hHandle, NULL, CloseHandle)
 
 #define CLOSE_SNAPSHOT(hHandle)					do																\
-												{																\
-													__pragma(warning(push))										\
-													__pragma(warning(disable:6387))								\
-													CLOSE_TO_VAL(hHandle, INVALID_HANDLE_VALUE, CloseHandle);	\
-													__pragma(warning(pop))										\
-												} while (FALSE)
+								{																\
+									__pragma(warning(push))										\
+									__pragma(warning(disable:6387))								\
+									CLOSE_TO_VAL(hHandle, INVALID_HANDLE_VALUE, CloseHandle);	\
+									__pragma(warning(pop))										\
+								} while (FALSE)
 
 static
 DWORD
@@ -165,6 +165,7 @@ There are some interesting macros that I've defined that, in my opinion, make my
 - `CLOSE_TO_VALUE` closes an object (most commonly `HANDLE` on Windows) and assigns it to a value (e.g. `NULL`) - unless it's equal to that value.
 - `CLOSE_HANDLE` simply closes a `NULL`-defaulted `HANDLE` with the `CloseHandle` API.
 - `CLOSE_SNAPSHOT` does the same but with `INVALID_HANDLE_VALUE`, since that's the error result for `CreateToolhelp32Snapshot`.
-Convince yourself why this case is leak-free and easy to read.
+
+Convince yourself why this code is leak-free and easy to read.
 
 
