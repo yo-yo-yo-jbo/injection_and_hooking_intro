@@ -23,11 +23,75 @@ Before diving into the code, I feel that I have to justify my coding style:
 - On Windows, there are usually two sets of APIs - one ending with an `A` for ANSI strings, and one with `W` for Unicode. I prefer to go for the Unicode ones (the ANSI ones usually simply translate the ANSI string into a wide string and call the `W` version anyway). There are also macros that expand to either the `A` or `W` version based on project preferences - I prefer to avoid those.
 - My C coding style contains many remarks (even obvious ones) and a proper cleanup label. I do not use `goto` besides `goto lblCleanup`, and I make sure I only have one `return` in a function. This makes for very clean quality code, in my opinion.
 - On Windows I will use the Windows common variable naming (with a prefix that hints the variable type).
+Now that those concepts are agreed (?), let us start with some basic `dll` skeleton code. Every `dll` starts with a `DllMain` function, which gets 3 parameters:
+- `hInstance` - the DLL `HINSTANCE` (which is a complicated way to say it's a pointer to the DLL in memory)
+- `dwReason` - the reason for calling `DllMain`. There are 4 reasons: when first loading the DLL to a process, when unloading from a process, and when a new thread is attached or detached. We will care only about the first load, and also make sure thread calls aren't made with the `DisableThreadLibraryCalls` API.
+- `pvReserved` - ignored.
 
+So, here's the `DllMain` code:
+```c
+BOOL
+WINAPI
+DllMain(
+	HINSTANCE hInstance,
+	DWORD dwReason,
+	LPVOID pvReserved
+)
+{
+	// Unreferenced parameters
+	UNREFERENCED_PARAMETER(pvReserved);
 
+	// Only care about loading
+	if (DLL_PROCESS_ATTACH == dwReason)
+	{
+		DisableThreadLibraryCalls(hInstance);
+		MainRoutine(hInstance);
+	}
 
+	// Succeed always
+	return TRUE;
+}
+```
 
+The code simply calls `MainRoutine` with the `hInstance` (that I will need later), and it does so only upon the first load (`DLL_PROCESS_ATTACH`).
+The `MainRoutine` function is just as easy - it will resolve the name of the executable that we are loaded into, and act accordingly:
+- If it's loaded to the right process - we hook.
+- Otherwise, we inject.
 
+```c
+#define PROCESS_OF_INTEREST (L"notepad.exe")
+
+static
+VOID
+MainRoutine(
+	HINSTANCE hInstance
+)
+{
+	WCHAR wszExePath[MAX_PATH] = { 0 };
+
+	// Get the EXE path that we are loaded into
+	if (0 == GetModuleFileNameW(NULL, wszExePath, ARRAYSIZE(wszExePath)))
+	{
+		goto lblCleanup;
+	}
+
+	// If we are not running in the right process - inject
+	if (NULL == wcsstr(wszExePath, PROCESS_OF_INTEREST))
+	{
+    // INJECTION CODE GOES HERE
+	}
+	else
+	{
+    // HOOKING CODE GOES HERE
+	}
+
+lblCleanup:
+
+	return;
+}
+```
+
+The idea is to invole the `GetModuleFileNameW` to get the path of the executable we are loaded into (with `NULL` to get that for the executable) and then using `wcsstr` to ensure we are loaded to the right process (`PROCESS_OF_INTEREST`).
 
 
 
