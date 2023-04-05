@@ -386,5 +386,7 @@ Let's examine some critical points:
 Even this short, trivial exercise is interesting in many ways, at least in my opinion.  
 When interviewing, I used to ask candidates how to inject and hook, what their considerations are, how things work and how to deal with edge-cases. I hope this blogpost is useful for those exact topics!
 
+
 Thanks,
+
 Jonathan Bar Or
