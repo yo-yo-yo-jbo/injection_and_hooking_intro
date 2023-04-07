@@ -264,7 +264,7 @@ In our case, we are going to perform some inline hooking. I am assuming I run in
 
 For the trampoline itself, the idea is simple:
 ```assembly
-48 b8 XX XX XX XX XX XX XX XX                       mov rax, <imm>
+48 B8 XX XX XX XX XX XX XX XX                       mov rax, <imm>
 50                                                  push rax
 C3                                                  ret
 ```
@@ -292,7 +292,7 @@ SetTranpoline(
 {
 	// Hook instruction: MOV RAX, <IMM>
 	g_pcOriginalFunctionPtr[0] = 0x48;
-	g_pcOriginalFunctionPtr[1] = 0xb8;
+	g_pcOriginalFunctionPtr[1] = 0xB8;
 	*((PULONGLONG)(g_pcOriginalFunctionPtr + 2)) = (ULONGLONG)pvHook;
 
 	// Hook instruction: PUSH RAX
