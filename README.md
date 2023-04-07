@@ -25,10 +25,11 @@ Since I'm lazy, I've decided to create one DLL for everything - if it's loaded t
 ## Finding the process ID
 If you come from a Linux background, mapping a process name to a process ID usually requires you to traverse a directory (`/proc`) and read files. On Windows, there are APIs to perform that, and specifically, the [Process32First](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-process32first) and [Process32Next](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-process32next) APIs.  
 Before diving into the code, I feel that I have to justify my coding style:
-- I prefer `C` to `C++`. I feel quite strongly about this, almost as strongly as Linus Torvalds [feels about this](http://harmful.cat-v.org/software/c++/linus).
+- I prefer `C` to `C++`. I feel quite strongly about this, almost as strongly as Linus Torvalds [feels about that](http://harmful.cat-v.org/software/c++/linus).
 - On Windows, there are usually two sets of APIs - one ending with an `A` for ANSI strings, and one with `W` for Unicode. I prefer to go for the Unicode ones (the ANSI ones usually simply translate the ANSI string into a wide string and call the `W` version anyway). There are also macros that expand to either the `A` or `W` version based on project preferences - I prefer to avoid those.
 - My C coding style contains many remarks (even obvious ones) and a proper cleanup label. I do not use `goto` besides `goto lblCleanup`, and I make sure I only have one `return` in a function. This makes for very clean quality code, in my opinion.
 - On Windows I will use the Windows common variable naming (with a prefix that hints the variable type).
+
 Now that those concepts are agreed (?), let us start with some basic `dll` skeleton code. Every `dll` starts with a `DllMain` function, which gets 3 parameters:
 - `hInstance` - the DLL `HINSTANCE` (which is a complicated way to say it's a pointer to the DLL in memory)
 - `dwReason` - the reason for calling `DllMain`. There are 4 reasons: when first loading the DLL to a process, when unloading from a process, and when a new thread is attached or detached. We will care only about the first load, and also make sure thread calls aren't made with the `DisableThreadLibraryCalls` API.
